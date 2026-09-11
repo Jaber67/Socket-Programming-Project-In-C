@@ -2,132 +2,227 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
+#include "username.h"
 #include <arpa/inet.h>
-#include <signal.h>
+#include<pthread.h>
 
 #define PORT 8080
-#define BUF_SIZE 1024
+#define BUFFER_SIZE 1024
+#define MAX_CLIENTS 10
 
-int main (void)
+typedef struct
 {
-    int server_fd, client_fd;
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t client_len = sizeof (client_addr);
-    char buffer[BUF_SIZE];
+    int socket;
+    char username[USERNAME_SIZE];
+} Client;
 
-    // STEP 1: socket toiri kora (IPv4, TCP)
-    server_fd = socket (AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0)
+Client *clients[MAX_CLIENTS];
+int client_count=0;
+
+pthread_mutex_t clients_mutex= PTHREAD_MUTEX_INITIALIZER;
+void *handle_client(void *arg)
+{
+    Client *client=(Client *)arg;
+    int client_socket=client->socket;
+    char buffer[BUFFER_SIZE];
+    
+    while (1)
     {
-        perror ("socket failed");
-        exit (EXIT_FAILURE);
+        memset(buffer, 0, BUFFER_SIZE);
+
+        int bytes_received = recv(
+            client_socket,
+            buffer,
+            BUFFER_SIZE - 1,
+            0
+        );
+
+        if (bytes_received <= 0)
+        {
+            break;
+        }
+
+        buffer[bytes_received] = '\0';
+
+        printf("Client %d: %s", client_socket, buffer);
+
+        pthread_mutex_lock(&clients_mutex);
+
+        for (int i = 0; i < client_count; i++)
+        {
+            if (clients[i]->socket != client_socket)
+            {
+                send(
+                    clients[i],
+                    buffer,
+                    strlen(buffer),
+                    0
+                );
+            }
+        }
+
+        pthread_mutex_unlock(&clients_mutex);
     }
 
-    // Ekhon port ke reuse korte dibo, tai bind error ashbe na re-run korle
+    pthread_mutex_lock(&clients_mutex);
+
+    for (int i = 0; i < client_count; i++)
+    {
+        if (clients[i] == client_socket)
+        {
+            clients[i] = clients[client_count - 1];
+            client_count--;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&clients_mutex);
+
+    close(client_socket);
+
+    printf("Client disconnected: %d\n", client_socket);
+
+    return NULL;
+}
+
+int main()
+{
+    int server_socket;
+    struct sockaddr_in server_address;
+
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (server_socket < 0)
+    {
+        perror("Socket creation failed");
+        return 1;
+    }
+
     int opt = 1;
-    setsockopt (server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof (opt));
 
-    // STEP 2: address struct set kora
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;  // sob interface theke connection nibe (LAN IP shoho)
-    server_addr.sin_port = htons (PORT);
+    setsockopt(
+        server_socket,
+        SOL_SOCKET,
+        SO_REUSEADDR,
+        &opt,
+        sizeof(opt)
+    );
 
-    // STEP 3: bind — socket ke ei IP+port er shathe attach kora
-    if (bind (server_fd, (struct sockaddr *) &server_addr, sizeof (server_addr)) < 0)
+    server_address.sin_family = AF_INET;
+    server_address.sin_addr.s_addr = INADDR_ANY;
+    server_address.sin_port = htons(PORT);
+
+    if (bind(
+        server_socket,
+        (struct sockaddr *)&server_address,
+        sizeof(server_address)
+    ) < 0)
     {
-        perror ("bind failed");
-        close (server_fd);
-        exit (EXIT_FAILURE);
+        perror("Bind failed");
+        close(server_socket);
+        return 1;
     }
 
-    // STEP 4: listen — connection er jonno wait kora shuru
-    if (listen (server_fd, 1) < 0)
+    if (listen(server_socket, MAX_CLIENTS) < 0)
     {
-        perror ("listen failed");
-        close (server_fd);
-        exit (EXIT_FAILURE);
+        perror("Listen failed");
+        close(server_socket);
+        return 1;
     }
 
-    printf ("SERVER STARTED. Waiting for a client on port %d...\n", PORT);
+    printf("=================================\n");
+    printf("      Chat Server Started\n");
+    printf("      Port: %d\n", PORT);
+    printf("      Max Clients: %d\n", MAX_CLIENTS);
+    printf("=================================\n");
 
-    // STEP 5: accept — client connect korle eta ekta notun socket fd dey (client_fd)
-    client_fd = accept (server_fd, (struct sockaddr *) &client_addr, &client_len);
-    if (client_fd < 0)
+    while (1)
     {
-        perror ("accept failed");
-        close (server_fd);
-        exit (EXIT_FAILURE);
-    }
+        struct sockaddr_in client_address;
+        socklen_t client_length = sizeof(client_address);
 
-    printf ("CLIENT CONNECTED from %s\n", inet_ntoa (client_addr.sin_addr));
-    printf ("Type your message and press Enter. Type 'exit' to quit.\n\n");
-    fflush (stdout);  // IMPORTANT: fork() er age buffer flush kora hocche
-                       // noile ei buffered text child process e o thakbe ar duitai print korbe (duplicate)
+        int client_socket = accept(
+            server_socket,
+            (struct sockaddr *)&client_address,
+            &client_length
+        );
 
-    // STEP 6: fork() diye 2 ta process banabo
-    // child process   -> khali receive kore print korbe
-    // parent process  -> khali keyboard theke porbe ar send korbe
-    pid_t pid = fork ();
-
-    if (pid < 0)
-    {
-        perror ("fork failed");
-        close (client_fd);
-        close (server_fd);
-        exit (EXIT_FAILURE);
-    }
-
-    if (pid == 0)
-    {
-        // ---- CHILD PROCESS: receiver ----
-        while (1)
+        if (client_socket < 0)
         {
-            memset (buffer, 0, BUF_SIZE);
-            int bytes_read = recv (client_fd, buffer, BUF_SIZE - 1, 0);
-
-            if (bytes_read <= 0)
-            {
-                printf ("\nClient disconnected. Exiting...\n");
-                break;
-            }
-
-            printf ("\rClient: %s\nYou: ", buffer);
-            fflush (stdout);
-        }
-        close (client_fd);
-        exit (0);
-    }
-    else
-    {
-        // ---- PARENT PROCESS: sender ----
-        while (1)
-        {
-            printf ("You: ");
-            fflush (stdout);
-
-            memset (buffer, 0, BUF_SIZE);
-            if (fgets (buffer, BUF_SIZE, stdin) == NULL)
-                break;
-
-            // fgets newline shoho rakhe, seta kete felbo
-            buffer[strcspn (buffer, "\n")] = '\0';
-
-            send (client_fd, buffer, strlen (buffer), 0);
-
-            if (strcmp (buffer, "exit") == 0)
-            {
-                printf ("Exiting chat...\n");
-                break;
-            }
+            perror("Accept failed");
+            continue;
         }
 
-        // Parent ber hoye gele child process ke o kill kore dibo
-        kill (pid, SIGKILL);
-        close (client_fd);
-        close (server_fd);
+        pthread_mutex_lock(&clients_mutex);
+
+        if (client_count >= MAX_CLIENTS)
+        {
+            pthread_mutex_unlock(&clients_mutex);
+
+            char *message = "Server is full.\n";
+
+            send(
+                client_socket,
+                message,
+                strlen(message),
+                0
+            );
+
+            close(client_socket);
+            continue;
+        }
+
+        clients[client_count] = client_socket;
+        client_count++;
+
+        printf(
+            "New client connected: %s:%d\n",
+            inet_ntoa(client_address.sin_addr),
+            ntohs(client_address.sin_port)
+        );
+
+        printf("Current clients: %d\n", client_count);
+
+        pthread_mutex_unlock(&clients_mutex);
+
+        int *socket_ptr = malloc(sizeof(int));
+
+        if (socket_ptr == NULL)
+        {
+            perror("Memory allocation failed");
+            close(client_socket);
+            continue;
+        }
+
+        *socket_ptr = client_socket;
+
+        pthread_t thread;
+
+        if (pthread_create(
+            &thread,
+            NULL,
+            handle_client,
+            socket_ptr
+        ) != 0)
+        {
+            perror("Thread creation failed");
+
+            pthread_mutex_lock(&clients_mutex);
+
+            client_count--;
+
+            pthread_mutex_unlock(&clients_mutex);
+
+            close(client_socket);
+            free(socket_ptr);
+
+            continue;
+        }
+
+        pthread_detach(thread);
     }
+
+    close(server_socket);
 
     return 0;
 }
