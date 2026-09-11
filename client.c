@@ -9,6 +9,7 @@
 
 #define PORT 8080
 #define BUF_SIZE 1024
+#define USERNAME_SIZE 32
 
 int main (void)
 {
@@ -16,6 +17,7 @@ int main (void)
     struct sockaddr_in server_addr;
     char buffer[BUF_SIZE];
     char server_ip[64];
+    char username[USERNAME_SIZE];
 
     // Taking the IP address from the server
     printf ("Enter server IP address (e.g. 192.168.0.105): ");
@@ -51,10 +53,47 @@ int main (void)
     }
 
     printf ("CONNECTED TO SERVER.\n");
+
+    // Ask for and send the username before anything else.
+    // Must match server's is_valid_username(): letters, digits, underscore only.
+    // Keep retrying until the server responds with "OK:".
+    while (1)
+    {
+        printf ("Enter your username: ");
+        fgets (username, sizeof (username), stdin);
+        username[strcspn (username, "\n")] = '\0';
+
+        send (sock_fd, username, strlen (username), 0);
+
+        memset (buffer, 0, BUF_SIZE);
+        int bytes_read = recv (sock_fd, buffer, BUF_SIZE - 1, 0);
+
+        if (bytes_read <= 0)
+        {
+            printf ("Server disconnected.\n");
+            close (sock_fd);
+            exit (EXIT_FAILURE);
+        }
+
+        if (strncmp (buffer, "OK:", 3) == 0)
+        {
+            printf ("%s", buffer + 3);
+            break;
+        }
+        else if (strncmp (buffer, "ERR:", 4) == 0)
+        {
+            printf ("%s", buffer + 4);
+        }
+        else
+        {
+            printf ("%s\n", buffer);
+        }
+    }
+
     printf ("Type your message and press Enter. Type 'exit' to quit.\n\n");
-    fflush (stdout); 
-                       
-    
+    fflush (stdout);
+
+
     pid_t pid = fork ();
 
     if (pid < 0)
@@ -66,7 +105,7 @@ int main (void)
 
     if (pid == 0)
     {
-        
+
         while (1)
         {
             memset (buffer, 0, BUF_SIZE);
@@ -78,7 +117,7 @@ int main (void)
                 break;
             }
 
-            printf ("\rServer: %s\nYou: ", buffer);
+            printf ("\r%s\nYou: ", buffer);
             fflush (stdout);
         }
         close (sock_fd);
@@ -86,7 +125,7 @@ int main (void)
     }
     else
     {
-        
+
         while (1)
         {
             printf ("You: ");
