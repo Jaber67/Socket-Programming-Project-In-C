@@ -81,10 +81,31 @@ void *handle_client(void *arg)
 
         buffer[bytes_received] = '\0';
 
-        printf("%s: %s\n", client->username, buffer);
+        // Check if the message is /help
+        if (strcmp(buffer, "/help") == 0)
+        {
+            char *help_message =
+                "Available commands:\n"
+                "/help\n"
+                "/list\n"
+                "/whoami\n"
+                "/msg username message\n"
+                "/broadcast message\n"
+                "/quit\n";
 
-        snprintf(out_msg, sizeof(out_msg), "%s: %s\n", client->username, buffer);
-        broadcast_message(out_msg, client_socket);
+            send(client_socket, help_message,
+                strlen(help_message), 0);
+        }
+        else
+        {
+            // Normal chat message
+            printf("%s: %s\n", client->username, buffer);
+
+            snprintf(out_msg, sizeof(out_msg),
+                    "%s: %s\n", client->username, buffer);
+
+            broadcast_message(out_msg, client_socket);
+        }
     }
 
     // Announce leave to everyone else
