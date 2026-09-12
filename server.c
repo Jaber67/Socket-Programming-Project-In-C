@@ -96,6 +96,28 @@ void *handle_client(void *arg)
             send(client_socket, help_message,
                 strlen(help_message), 0);
         }
+        else if (strcmp(buffer, "/list") == 0)
+        {
+            char list_message[BUFFER_SIZE];
+            int offset = 0;
+
+            offset += snprintf(list_message, sizeof(list_message), "Connected users:\n");
+
+            pthread_mutex_lock(&clients_mutex);
+
+            for (int i = 0; i < client_count; i++)
+            {
+                offset += snprintf(list_message + offset,
+                                sizeof(list_message) - offset,
+                                "%s\n",
+                                clients[i]->username);
+            }
+
+            pthread_mutex_unlock(&clients_mutex);
+
+            send(client_socket, list_message,
+                strlen(list_message), 0);
+        }
         else
         {
             // Normal chat message
