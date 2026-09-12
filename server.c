@@ -3,23 +3,80 @@
 #include <string.h>
 #include <unistd.h>
 #include "username.h"
+#include "server.h"
+#include "commands.h"
 #include <arpa/inet.h>
 #include <pthread.h>
 
 #define PORT 8080
-#define BUFFER_SIZE 1024
-#define MAX_CLIENTS 10
-
-typedef struct
-{
-    int socket;
-    char username[USERNAME_SIZE];
-} Client;
 
 Client *clients[MAX_CLIENTS];
 int client_count = 0;
 
 pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Reads the next '\n'-terminated line from the socket into out
+// (null-terminated, newline and any trailing '\r' stripped).
+// Returns 1 on success, 0 if the connection closed or errored.
+int read_line(int sock, LineReader *lr, char *out, size_t out_size)
+{
+    while (1)
+    {
+        char *newline = memchr(lr->buf, '\n', lr->len);
+
+        if (newline != NULL)
+        {
+            int line_len = newline - lr->buf;
+            int copy_len = line_len;
+
+            if ((size_t)copy_len >= out_size)
+            {
+                copy_len = out_size - 1;
+            }
+
+            memcpy(out, lr->buf, copy_len);
+            out[copy_len] = '\0';
+
+            if (copy_len > 0 && out[copy_len - 1] == '\r')
+            {
+                out[copy_len - 1] = '\0';
+            }
+
+            int consumed = line_len + 1; // include the '\n'
+            memmove(lr->buf, lr->buf + consumed, lr->len - consumed);
+            lr->len -= consumed;
+
+            return 1;
+        }
+
+        if ((size_t)lr->len >= sizeof(lr->buf) - 1)
+        {
+            // Line too long for our buffer with no newline in sight;
+            // flush what we have as a single line rather than overflow.
+            int copy_len = lr->len;
+
+            if ((size_t)copy_len >= out_size)
+            {
+                copy_len = out_size - 1;
+            }
+
+            memcpy(out, lr->buf, copy_len);
+            out[copy_len] = '\0';
+            lr->len = 0;
+
+            return 1;
+        }
+
+        int n = recv(sock, lr->buf + lr->len, sizeof(lr->buf) - lr->len - 1, 0);
+
+        if (n <= 0)
+        {
+            return 0;
+        }
+
+        lr->len += n;
+    }
+}
 
 // Send a message to every client except (optionally) the sender.
 // Pass exclude_socket = -1 to send to everyone.
@@ -36,6 +93,29 @@ void broadcast_message(const char *message, int exclude_socket)
     }
 
     pthread_mutex_unlock(&clients_mutex);
+}
+
+// Send a message to exactly one client by username.
+// Returns 1 if the user was found and the message was sent, 0 otherwise.
+int send_to_user(const char *username, const char *message)
+{
+    int found = 0;
+
+    pthread_mutex_lock(&clients_mutex);
+
+    for (int i = 0; i < client_count; i++)
+    {
+        if (strcmp(clients[i]->username, username) == 0)
+        {
+            send(clients[i]->socket, message, strlen(message), 0);
+            found = 1;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&clients_mutex);
+
+    return found;
 }
 
 void remove_client(int client_socket)
@@ -72,62 +152,31 @@ void *handle_client(void *arg)
     {
         memset(buffer, 0, BUFFER_SIZE);
 
-        int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
-
-        if (bytes_received <= 0)
+        if (!read_line(client_socket, &client->reader, buffer, BUFFER_SIZE))
         {
             break;
         }
 
-        buffer[bytes_received] = '\0';
-
-        // Check if the message is /help
-        if (strcmp(buffer, "/help") == 0)
+        if (buffer[0] == '/')
         {
-            char *help_message =
-                "Available commands:\n"
-                "/help\n"
-                "/list\n"
-                "/whoami\n"
-                "/msg username message\n"
-                "/broadcast message\n"
-                "/quit\n";
+            CommandResult result = handle_command(client, buffer);
 
-            send(client_socket, help_message,
-                strlen(help_message), 0);
-        }
-        else if (strcmp(buffer, "/list") == 0)
-        {
-            char list_message[BUFFER_SIZE];
-            int offset = 0;
-
-            offset += snprintf(list_message, sizeof(list_message), "Connected users:\n");
-
-            pthread_mutex_lock(&clients_mutex);
-
-            for (int i = 0; i < client_count; i++)
+            if (result == COMMAND_HANDLED)
             {
-                offset += snprintf(list_message + offset,
-                                sizeof(list_message) - offset,
-                                "%s\n",
-                                clients[i]->username);
+                continue;
             }
 
-            pthread_mutex_unlock(&clients_mutex);
-
-            send(client_socket, list_message,
-                strlen(list_message), 0);
+            // COMMAND_NOT_MATCHED (e.g. an unrecognized "/whatever") falls
+            // through and is broadcast as a normal chat message below.
         }
-        else
-        {
-            // Normal chat message
-            printf("%s: %s\n", client->username, buffer);
 
-            snprintf(out_msg, sizeof(out_msg),
-                    "%s: %s\n", client->username, buffer);
+        // Normal chat message
+        printf("%s: %s\n", client->username, buffer);
 
-            broadcast_message(out_msg, client_socket);
-        }
+        snprintf(out_msg, sizeof(out_msg),
+                "%s: %s\n", client->username, buffer);
+
+        broadcast_message(out_msg, client_socket);
     }
 
     // Announce leave to everyone else
@@ -216,20 +265,17 @@ int main(void)
         // chances to pick a valid, unused one instead of disconnecting them.
         char username_buf[USERNAME_SIZE];
         int got_valid_username = 0;
+        LineReader reader = {0};
 
         while (1)
         {
             memset(username_buf, 0, USERNAME_SIZE);
 
-            int name_bytes = recv(client_socket, username_buf, USERNAME_SIZE - 1, 0);
-
-            if (name_bytes <= 0)
+            if (!read_line(client_socket, &reader, username_buf, USERNAME_SIZE))
             {
                 // Client disconnected while choosing a username.
                 break;
             }
-
-            username_buf[strcspn(username_buf, "\r\n")] = '\0';
 
             if (!is_valid_username(username_buf))
             {
@@ -284,6 +330,7 @@ int main(void)
         new_client->socket = client_socket;
         strncpy(new_client->username, username_buf, USERNAME_SIZE - 1);
         new_client->username[USERNAME_SIZE - 1] = '\0';
+        new_client->reader = reader; // preserve any bytes already buffered
 
         clients[client_count] = new_client;
         client_count++;

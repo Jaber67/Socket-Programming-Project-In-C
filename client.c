@@ -11,6 +11,77 @@
 #define BUF_SIZE 1024
 #define USERNAME_SIZE 32
 
+// Buffers raw bytes from the socket so incoming messages can be read one
+// line (terminated by '\n') at a time, matching how the server frames
+// its sends. Without this, two messages arriving close together (e.g. a
+// join notice while you're mid-type) can land in the same recv() call
+// and get printed as one garbled blob.
+typedef struct
+{
+    char buf[BUF_SIZE * 2];
+    int len;
+} LineReader;
+
+// Returns 1 on success (line copied into out, newline/trailing '\r'
+// stripped), 0 if the connection closed or errored.
+int read_line (int sock, LineReader *lr, char *out, size_t out_size)
+{
+    while (1)
+    {
+        char *newline = memchr (lr->buf, '\n', lr->len);
+
+        if (newline != NULL)
+        {
+            int line_len = newline - lr->buf;
+            int copy_len = line_len;
+
+            if ((size_t) copy_len >= out_size)
+            {
+                copy_len = out_size - 1;
+            }
+
+            memcpy (out, lr->buf, copy_len);
+            out[copy_len] = '\0';
+
+            if (copy_len > 0 && out[copy_len - 1] == '\r')
+            {
+                out[copy_len - 1] = '\0';
+            }
+
+            int consumed = line_len + 1;
+            memmove (lr->buf, lr->buf + consumed, lr->len - consumed);
+            lr->len -= consumed;
+
+            return 1;
+        }
+
+        if ((size_t) lr->len >= sizeof (lr->buf) - 1)
+        {
+            int copy_len = lr->len;
+
+            if ((size_t) copy_len >= out_size)
+            {
+                copy_len = out_size - 1;
+            }
+
+            memcpy (out, lr->buf, copy_len);
+            out[copy_len] = '\0';
+            lr->len = 0;
+
+            return 1;
+        }
+
+        int n = recv (sock, lr->buf + lr->len, sizeof (lr->buf) - lr->len - 1, 0);
+
+        if (n <= 0)
+        {
+            return 0;
+        }
+
+        lr->len += n;
+    }
+}
+
 int main (void)
 {
     int sock_fd;
@@ -57,18 +128,21 @@ int main (void)
     // Ask for and send the username before anything else.
     // Must match server's is_valid_username(): letters, digits, underscore only.
     // Keep retrying until the server responds with "OK:".
+    LineReader reader = {0};
+
     while (1)
     {
         printf ("Enter your username: ");
         fgets (username, sizeof (username), stdin);
         username[strcspn (username, "\n")] = '\0';
 
-        send (sock_fd, username, strlen (username), 0);
+        char username_line[USERNAME_SIZE + 1];
+        snprintf (username_line, sizeof (username_line), "%s\n", username);
+        send (sock_fd, username_line, strlen (username_line), 0);
 
         memset (buffer, 0, BUF_SIZE);
-        int bytes_read = recv (sock_fd, buffer, BUF_SIZE - 1, 0);
 
-        if (bytes_read <= 0)
+        if (!read_line (sock_fd, &reader, buffer, BUF_SIZE))
         {
             printf ("Server disconnected.\n");
             close (sock_fd);
@@ -109,15 +183,17 @@ int main (void)
         while (1)
         {
             memset (buffer, 0, BUF_SIZE);
-            int bytes_read = recv (sock_fd, buffer, BUF_SIZE - 1, 0);
 
-            if (bytes_read <= 0)
+            if (!read_line (sock_fd, &reader, buffer, BUF_SIZE))
             {
                 printf ("\nServer disconnected. Exiting...\n");
                 break;
             }
 
-            printf ("\r%s\nYou: ", buffer);
+            // Clear whatever's on the current line (e.g. a half-typed
+            // "You: ..." prompt) before printing the incoming message,
+            // then redraw the prompt underneath it.
+            printf ("\r\033[K%s\nYou: ", buffer);
             fflush (stdout);
         }
         close (sock_fd);
@@ -137,7 +213,9 @@ int main (void)
 
             buffer[strcspn (buffer, "\n")] = '\0';
 
-            send (sock_fd, buffer, strlen (buffer), 0);
+            char out_line[BUF_SIZE + 1];
+            snprintf (out_line, sizeof (out_line), "%s\n", buffer);
+            send (sock_fd, out_line, strlen (out_line), 0);
 
             if (strcmp (buffer, "exit") == 0)
             {
