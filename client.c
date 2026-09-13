@@ -11,19 +11,12 @@
 #define BUF_SIZE 1024
 #define USERNAME_SIZE 32
 
-// Buffers raw bytes from the socket so incoming messages can be read one
-// line (terminated by '\n') at a time, matching how the server frames
-// its sends. Without this, two messages arriving close together (e.g. a
-// join notice while you're mid-type) can land in the same recv() call
-// and get printed as one garbled blob.
 typedef struct
 {
     char buf[BUF_SIZE * 2];
     int len;
 } LineReader;
 
-// Returns 1 on success (line copied into out, newline/trailing '\r'
-// stripped), 0 if the connection closed or errored.
 int read_line (int sock, LineReader *lr, char *out, size_t out_size)
 {
     while (1)
@@ -82,6 +75,49 @@ int read_line (int sock, LineReader *lr, char *out, size_t out_size)
     }
 }
 
+void show_windows_notification (const char *title, const char *message)
+{
+    char safe_message[BUF_SIZE];
+    strncpy (safe_message, message, sizeof (safe_message) - 1);
+    safe_message[sizeof (safe_message) - 1] = '\0';
+
+    for (char *p = safe_message; *p; p++)
+    {
+        if (*p == '\'' || *p == '"' || *p == '\n' || *p == '\r')
+        {
+            *p = ' ';
+        }
+    }
+
+    char safe_title[128];
+    strncpy (safe_title, title, sizeof (safe_title) - 1);
+    safe_title[sizeof (safe_title) - 1] = '\0';
+    for (char *p = safe_title; *p; p++)
+    {
+        if (*p == '\'' || *p == '"' || *p == '\n' || *p == '\r')
+        {
+            *p = ' ';
+        }
+    }
+
+    char command[BUF_SIZE * 2 + 512];
+    snprintf (command, sizeof (command),
+        "powershell.exe -NoProfile -Command \""
+        "Add-Type -AssemblyName System.Windows.Forms; "
+        "Add-Type -AssemblyName System.Drawing; "
+        "\\$notify = New-Object System.Windows.Forms.NotifyIcon; "
+        "\\$notify.Icon = [System.Drawing.SystemIcons]::Information; "
+        "\\$notify.Visible = \\$true; "
+        "\\$notify.BalloonTipTitle = '%s'; "
+        "\\$notify.BalloonTipText = '%s'; "
+        "\\$notify.ShowBalloonTip(5000); "
+        "Start-Sleep -Seconds 6; "
+        "\\$notify.Dispose()\" > /dev/null 2>&1 &",
+        safe_title, safe_message);
+
+    system (command);
+}
+
 int main (void)
 {
     int sock_fd;
@@ -90,12 +126,10 @@ int main (void)
     char server_ip[64];
     char username[USERNAME_SIZE];
 
-    // Taking the IP address from the server
     printf ("Enter server IP address (e.g. 192.168.0.105): ");
     fgets (server_ip, sizeof (server_ip), stdin);
     server_ip[strcspn (server_ip, "\n")] = '\0';
 
-    // CREATING THEEEEE SOCKETTTTT
     sock_fd = socket (AF_INET, SOCK_STREAM, 0);
     if (sock_fd < 0)
     {
@@ -103,7 +137,6 @@ int main (void)
         exit (EXIT_FAILURE);
     }
 
-    // SETTING THE SERVER ADDRESS STRUCT
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons (PORT);
 
@@ -114,7 +147,6 @@ int main (void)
         exit (EXIT_FAILURE);
     }
 
-    // Connecting to the server
     printf ("Connecting to %s:%d ...\n", server_ip, PORT);
     if (connect (sock_fd, (struct sockaddr *) &server_addr, sizeof (server_addr)) < 0)
     {
@@ -125,9 +157,6 @@ int main (void)
 
     printf ("CONNECTED TO SERVER.\n");
 
-    // Ask for and send the username before anything else.
-    // Must match server's is_valid_username(): letters, digits, underscore only.
-    // Keep retrying until the server responds with "OK:".
     LineReader reader = {0};
 
     while (1)
@@ -190,9 +219,8 @@ int main (void)
                 break;
             }
 
-            // Clear whatever's on the current line (e.g. a half-typed
-            // "You: ..." prompt) before printing the incoming message,
-            // then redraw the prompt underneath it.
+            show_windows_notification ("New Message", buffer);
+
             printf ("\r\033[K%s\nYou: ", buffer);
             fflush (stdout);
         }
