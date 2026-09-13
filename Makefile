@@ -1,10 +1,13 @@
-CC = gcc
-CFLAGS = -Wall -pthread
+CC      := gcc
+CFLAGS  := -Wall -Wextra -g
+LDLIBS  := -lpthread
+
+.PHONY: all clean
 
 all: server client
 
-server: server.c commands.c username.c notify.c username.h server.h commands.h notify.h
-	$(CC) $(CFLAGS) -o server server.c commands.c username.c notify.c
+server: server.c username.c commands.c username.h server.h commands.h
+	$(CC) $(CFLAGS) -o server server.c username.c commands.c $(LDLIBS)
 
 client: client.c
 	$(CC) $(CFLAGS) -o client client.c
