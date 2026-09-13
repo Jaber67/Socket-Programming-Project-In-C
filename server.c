@@ -7,6 +7,10 @@
 #include "commands.h"
 #include <arpa/inet.h>
 #include <pthread.h>
+#include "username.h"
+#include "server.h"
+#include "commands.h"
+#include "notify.h"
 
 #define PORT 8080
 
@@ -177,6 +181,7 @@ void *handle_client(void *arg)
                 "%s: %s\n", client->username, buffer);
 
         broadcast_message(out_msg, client_socket);
+	notify_mentions(client, buffer);
     }
 
     // Announce leave to everyone else
