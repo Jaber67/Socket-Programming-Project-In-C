@@ -5,9 +5,13 @@ client
 *.out
 *.o
 
-# Shell history (shouldn't be tracked - can leak local paths/IPs)
+
 .bash_history
 
 # Editor/OS cruft
 .vscode/
 .DS_Store
+
+.cph/
+
+features.txt
