@@ -23,6 +23,7 @@ static void current_timestamp(char *buf, size_t size)
     time_t now = time(NULL);
     struct tm *local = localtime(&now);
     strftime(buf, size, "%Y-%m-%d %H:%M:%S", local);
+    //currently prints in 24 hour format for 12 hours format %I and add %p
 }
 
 void log_chat(const char *message)
@@ -284,12 +285,7 @@ void broadcast_message(const char *message, int exclude_socket)
     {
         if (clients[i]->socket != exclude_socket)
         {
-            send(
-                clients[i]->socket,
-                message,
-                strlen(message),
-                0
-            );
+            send(clients[i]->socket,message,strlen(message),0);
         }
     }
 
@@ -306,13 +302,7 @@ int send_to_user(const char *username, const char *message)
     {
         if (strcmp(clients[i]->username, username) == 0)
         {
-            send(
-                clients[i]->socket,
-                message,
-                strlen(message),
-                0
-            );
-
+            send(clients[i]->socket,message,strlen(message),0);
             found = 1;
             break;
         }
@@ -381,11 +371,7 @@ void *handle_client(void *arg)
     {
         memset(buffer, 0, BUFFER_SIZE);
 
-        if (!read_line(
-                client_socket,
-                &client->reader,
-                buffer,
-                BUFFER_SIZE))
+        if (!read_line(client_socket,&client->reader,buffer,BUFFER_SIZE))
         {
             break;
         }
@@ -413,12 +399,7 @@ void *handle_client(void *arg)
         log_chat(out_msg);
     }
 
-    snprintf(
-        out_msg,
-        sizeof(out_msg),
-        "*** %s has left the chat ***\n",
-        client->username
-    );
+    snprintf(out_msg,sizeof(out_msg),"*** %s has left the chat ***\n",client->username);
 
     printf("%s", out_msg);
     broadcast_message(out_msg, client_socket);
@@ -427,11 +408,7 @@ void *handle_client(void *arg)
     remove_client(client_socket);
     close(client_socket);
 
-    printf(
-        "Client disconnected: %s (socket %d)\n",
-        client->username,
-        client_socket
-    );
+    printf("Client disconnected: %s (socket %d)\n",client->username,client_socket);
 
     return NULL;
 }
@@ -443,21 +420,9 @@ int main(void)
 
     server_socket = socket(AF_INET, SOCK_STREAM, 0);
 
-    if (server_socket < 0)
-    {
-        perror("Socket creation failed");
-        return 1;
-    }
-
     int opt = 1;
 
-    setsockopt(
-        server_socket,
-        SOL_SOCKET,
-        SO_REUSEADDR,
-        &opt,
-        sizeof(opt)
-    );
+    setsockopt(server_socket,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
 
     server_address.sin_family = AF_INET;
     server_address.sin_addr.s_addr = INADDR_ANY;
@@ -473,12 +438,7 @@ int main(void)
         return 1;
     }
 
-    if (listen(server_socket, MAX_CLIENTS) < 0)
-    {
-        perror("Listen failed");
-        close(server_socket);
-        return 1;
-    }
+    listen(server_socket, MAX_CLIENTS);
 
     printf("=================================\n");
     printf("      Chat Server Started\n");
@@ -511,12 +471,7 @@ int main(void)
 
             char *message = "Server is full.\n";
 
-            send(
-                client_socket,
-                message,
-                strlen(message),
-                0
-            );
+            send(client_socket,message,strlen(message),0);
 
             close(client_socket);
             continue;
@@ -532,11 +487,7 @@ int main(void)
         {
             memset(username_buf, 0, USERNAME_SIZE);
 
-            if (!read_line(
-                    client_socket,
-                    &reader,
-                    username_buf,
-                    USERNAME_SIZE))
+            if (!read_line(client_socket,&reader,username_buf,USERNAME_SIZE))
             {
                 break;
             }
@@ -547,12 +498,7 @@ int main(void)
                     "ERR:Invalid username. Use only letters, "
                     "digits, and underscores. Try again: \n";
 
-                send(
-                    client_socket,
-                    message,
-                    strlen(message),
-                    0
-                );
+                send(client_socket,message,strlen(message),0);
 
                 continue;
             }
@@ -563,9 +509,7 @@ int main(void)
 
             for (int i = 0; i < client_count; i++)
             {
-                if (strcmp(
-                        clients[i]->username,
-                        username_buf) == 0)
+                if (strcmp(clients[i]->username,username_buf) == 0)
                 {
                     duplicate = 1;
                     break;
@@ -579,12 +523,7 @@ int main(void)
                 char *message =
                     "ERR:Username already taken. Try again: \n";
 
-                send(
-                    client_socket,
-                    message,
-                    strlen(message),
-                    0
-                );
+                send(client_socket,message,strlen(message),0);
 
                 continue;
             }
@@ -603,23 +542,9 @@ int main(void)
 
         Client *new_client = malloc(sizeof(Client));
 
-        if (new_client == NULL)
-        {
-            pthread_mutex_unlock(&clients_mutex);
-
-            perror("Memory allocation failed");
-            close(client_socket);
-
-            continue;
-        }
-
         new_client->socket = client_socket;
 
-        strncpy(
-            new_client->username,
-            username_buf,
-            USERNAME_SIZE - 1
-        );
+        strncpy(new_client->username,username_buf,USERNAME_SIZE - 1);
 
         new_client->username[USERNAME_SIZE - 1] = '\0';
         new_client->reader = reader;
@@ -629,12 +554,7 @@ int main(void)
 
         char ok_msg[] = "OK:Username accepted.\n";
 
-        send(
-            client_socket,
-            ok_msg,
-            strlen(ok_msg),
-            0
-        );
+        send(client_socket,ok_msg,strlen(ok_msg),0);
 
         printf(
             "New client connected: %s (%s:%d)\n",
@@ -649,13 +569,8 @@ int main(void)
 
         pthread_t thread;
 
-        if (pthread_create(
-                &thread,
-                NULL,
-                handle_client,
-                new_client) != 0)
+        if (pthread_create(&thread,NULL,handle_client,new_client) != 0)
         {
-            perror("Thread creation failed");
 
             remove_client(client_socket);
             close(client_socket);
