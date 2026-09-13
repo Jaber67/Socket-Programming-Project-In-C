@@ -11,12 +11,14 @@ static void handle_help(Client *client)
         "/help\n"
         "/list\n"
         "/msg username message\n"
-        "/broadcast message\n";
+        "/broadcast message\n"
+        "/history username\n";
 
     send(client->socket, help_message, strlen(help_message), 0);
 }
 
-// Syntax: /msg <username> <message text...>
+static void handle_history(Client *client, const char *other_username);
+
 static void handle_msg(Client *client, char *args)
 {
     char *space = strchr(args, ' ');
@@ -39,6 +41,12 @@ static void handle_msg(Client *client, char *args)
         return;
     }
 
+    if (strcmp(msg_text, "chathistory") == 0)
+    {
+        handle_history(client, target_username);
+        return;
+    }
+
     if (strcmp(target_username, client->username) == 0)
     {
         char *err = "ERR:You can't message yourself.\n";
@@ -56,6 +64,8 @@ static void handle_msg(Client *client, char *args)
         snprintf(confirm, sizeof(confirm),
                 "[PM to %s]: %s\n", target_username, msg_text);
         send(client->socket, confirm, strlen(confirm), 0);
+
+        log_pm(client->username, target_username, msg_text);
     }
     else
     {
@@ -66,7 +76,6 @@ static void handle_msg(Client *client, char *args)
     }
 }
 
-// Syntax: /broadcast <message text...>
 static void handle_broadcast(Client *client, char *msg_text)
 {
     if (strlen(msg_text) == 0)
@@ -82,9 +91,34 @@ static void handle_broadcast(Client *client, char *msg_text)
     snprintf(out_msg, sizeof(out_msg),
             "[broadcast] %s: %s\n", client->username, msg_text);
 
-    // Send to everyone, including the sender, so they see their own
-    // broadcast formatted the same way as everyone else does.
     broadcast_message(out_msg, -1);
+    log_chat(out_msg);
+}
+
+static void handle_history(Client *client, const char *other_username)
+{
+    if (strlen(other_username) == 0)
+    {
+        char *err = "ERR:Usage: /history username\n";
+        send(client->socket, err, strlen(err), 0);
+        return;
+    }
+
+    char history[BUFFER_SIZE * 8];
+
+    if (get_pm_history(client->username, other_username, history, sizeof(history)) && strlen(history) > 0)
+    {
+        char header[USERNAME_SIZE + 32];
+        snprintf(header, sizeof(header),
+                "--- History with %s ---\n", other_username);
+        send(client->socket, header, strlen(header), 0);
+        send(client->socket, history, strlen(history), 0);
+    }
+    else
+    {
+        char *msg = "No messages found.\n";
+        send(client->socket, msg, strlen(msg), 0);
+    }
 }
 
 CommandResult handle_command(Client *client, const char *buffer)
@@ -100,16 +134,17 @@ CommandResult handle_command(Client *client, const char *buffer)
         char list_message[BUFFER_SIZE];
         int offset = 0;
 
-        offset += snprintf(list_message, sizeof(list_message), "Connected users:\n");
+        offset += snprintf(list_message, sizeof(list_message),
+                           "Connected users:\n");
 
         pthread_mutex_lock(&clients_mutex);
 
         for (int i = 0; i < client_count; i++)
         {
             offset += snprintf(list_message + offset,
-                            sizeof(list_message) - offset,
-                            "%s\n",
-                            clients[i]->username);
+                               sizeof(list_message) - offset,
+                               "%s\n",
+                               clients[i]->username);
         }
 
         pthread_mutex_unlock(&clients_mutex);
@@ -120,8 +155,6 @@ CommandResult handle_command(Client *client, const char *buffer)
 
     if (strncmp(buffer, "/msg ", 5) == 0)
     {
-        // handle_msg mutates the string in place (splits on the first
-        // space), so operate on a writable copy of the caller's buffer.
         char args[BUFFER_SIZE];
         strncpy(args, buffer + 5, sizeof(args) - 1);
         args[sizeof(args) - 1] = '\0';
@@ -133,6 +166,19 @@ CommandResult handle_command(Client *client, const char *buffer)
     if (strncmp(buffer, "/broadcast ", 11) == 0)
     {
         handle_broadcast(client, (char *)buffer + 11);
+        return COMMAND_HANDLED;
+    }
+
+    if (strncmp(buffer, "/history ", 9) == 0)
+    {
+        handle_history(client, buffer + 9);
+        return COMMAND_HANDLED;
+    }
+
+    if (strcmp(buffer, "/history") == 0)
+    {
+        char *err = "ERR:Usage: /history username\n";
+        send(client->socket, err, strlen(err), 0);
         return COMMAND_HANDLED;
     }
 
