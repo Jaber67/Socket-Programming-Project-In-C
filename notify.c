@@ -1,3 +1,4 @@
+
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -6,34 +7,65 @@
 
 void notify_mentions(Client *sender, const char *message)
 {
-    char scan_buf[BUFFER_SIZE];
-    strncpy(scan_buf, message, sizeof(scan_buf) - 1);
-    scan_buf[sizeof(scan_buf) - 1] = '\0';
+    int i = 0;
 
-    char *token = strtok(scan_buf, " ");
-    while (token != NULL)
+    while (message[i] != '\0')
     {
-        if (token[0] == '@' && strlen(token) > 1)
+        /*
+         * Check whether the current character is '@'
+         * and whether it starts a new word.
+         */
+        if (message[i] == '@' &&
+            (i == 0 || isspace((unsigned char)message[i - 1])))
         {
             char target[USERNAME_SIZE];
-            strncpy(target, token + 1, sizeof(target) - 1);
-            target[sizeof(target) - 1] = '\0';
+            int j = i + 1;
+            int len = 0;
 
-            int len = strlen(target);
-            while (len > 0 && !isalnum((unsigned char)target[len - 1]) && target[len - 1] != '_')
+            /*
+             * Extract username characters after '@'.
+             * Valid username characters:
+             * letters, digits, underscore
+             */
+            while (message[j] != '\0' &&
+                   (isalnum((unsigned char)message[j]) ||
+                    message[j] == '_'))
             {
-                target[--len] = '\0';
+                if (len < USERNAME_SIZE - 1)
+                {
+                    target[len++] = message[j];
+                }
+
+                j++;
             }
 
-            if (len > 0 && strcmp(target, sender->username) != 0)
+            target[len] = '\0';
+
+            /*
+             * Send notification only if:
+             * 1. Username is not empty.
+             * 2. Target is not the sender.
+             */
+            if (len > 0 &&
+                strcmp(target, sender->username) != 0)
             {
                 char notice[BUFFER_SIZE + USERNAME_SIZE + 32];
+
                 snprintf(notice, sizeof(notice),
                          "*** %s mentioned you: %s ***\n",
                          sender->username, message);
+
                 send_to_user(target, notice);
             }
+
+            /*
+             * Continue scanning after the username.
+             */
+            i = j;
         }
-        token = strtok(NULL, " ");
+        else
+        {
+            i++;
+        }
     }
 }
